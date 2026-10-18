@@ -1,0 +1,425 @@
+﻿
+// Noise modes        - Kernels 0, 1, 2
+// Base kernel defaults to perlin
+#pragma kernel Distribute
+#pragma kernel Distribute NOISEMODE_CELLULAR
+#pragma kernel Distribute NOISEMODE_POLKADOT
+
+// Block map and noise modes - Kernels 3, 4, 5
+#pragma kernel Distribute LOCAL_BLOCKMAP
+#pragma kernel Distribute LOCAL_BLOCKMAP NOISEMODE_CELLULAR
+#pragma kernel Distribute LOCAL_BLOCKMAP NOISEMODE_POLKADOT
+
+// Render             - Kernels 6, 7, 8, 9
+#pragma kernel Evaluate
+#pragma kernel Evaluate OUTPUT_TERRAIN_COLOR
+#pragma kernel Evaluate SEPARATE_LOD_RANGE_CULLING
+#pragma kernel Evaluate SEPARATE_LOD_RANGE_CULLING OUTPUT_TERRAIN_COLOR
+
+// SolSatellite: Parallax's TerrainScatters with one addition, used on Earth only (ScatterMask.cs).
+// Kernels 0-9 are Parallax's own, unchanged and at the same places. Kernels 10-15 are 0-5 that
+// also ask the map (OpenStreetMap, drawn into the clipmap's scatter mask layer) whether the
+// scatter belongs where it would be placed: none on roads, railways, runways, buildings or
+// water, trees only in forests (and a few elsewhere), no trees or rocks on airfields.
+#pragma kernel Distribute SOLSAT_MASK
+#pragma kernel Distribute SOLSAT_MASK NOISEMODE_CELLULAR
+#pragma kernel Distribute SOLSAT_MASK NOISEMODE_POLKADOT
+#pragma kernel Distribute SOLSAT_MASK LOCAL_BLOCKMAP
+#pragma kernel Distribute SOLSAT_MASK LOCAL_BLOCKMAP NOISEMODE_CELLULAR
+#pragma kernel Distribute SOLSAT_MASK LOCAL_BLOCKMAP NOISEMODE_POLKADOT
+
+#include "ScatterStructs.cginc"
+#include "ScatterParams.cginc"
+#include "../Includes/gpu_noise_lib.glsl" 
+#include "ScatterUtils.cginc"
+
+StructuredBuffer<int> triangles;
+StructuredBuffer<float3> vertices;
+StructuredBuffer<float3> normals;
+
+#if defined (OUTPUT_TERRAIN_COLOR)
+StructuredBuffer<float4> colors;
+#endif
+
+// UV in xy, allowScatter in z
+StructuredBuffer<float3> uvs;
+
+// Normalized directions from planet center to quad vertex
+StructuredBuffer<float3> directionsFromCenter;
+
+// Biome map - RGBA (although alpha is unused, I can't convert to RGB)
+Texture2D<float4> biomeMap;
+Texture2D<float4> scatterBiomes;
+
+// Local blockmap - Removes scatters locally, only if defined
+// Valid quads calculated on CPU, blockmap sampled per tri and interpolated
+// 0 blocked, 1 allowed
+#if defined (LOCAL_BLOCKMAP)
+Texture2D<float4> blockMap;
+#endif
+
+// The naming is important here
+SamplerState linearClampSampler;
+SamplerState pointClampSampler;
+
+AppendStructuredBuffer<PositionData> transforms;
+
+#if defined (SOLSAT_MASK)
+// The map's scatter mask: a texture array with the clipmap's levels, toroidal (wrap sampling).
+// r: no scatters (roads, railways, runways, buildings, water), g: forest,
+// b: built-up 0.5 / airfield 1, a: map data here 0.5 / park 1.
+Texture2DArray<float4> _SolSatMask;
+SamplerState linearRepeatSampler;
+float4x4 _SolSatWorldToPlanet;    // world -> PQS local: planet-fixed, so it stays right whatever the camera does
+float4 _SolSatMaskUp;             // the clipmap plane's anchor, PQS local: up (w: plane radius), east, north
+float4 _SolSatMaskEast;
+float4 _SolSatMaskNorth;
+float4 _SolSatMaskLevels[16];     // xy: window centre / level width, z: 1 / level width, w: 1 if in use
+int _SolSatKind;                  // 1 ground cover, 2 tree, 3 rock
+
+// The mask at a world position: the finest level that has the point well inside (its inner
+// half: what was drawn before the window last moved), nothing where no level does.
+float4 SolSatMaskAt(float3 worldPos)
+{
+    float3 p = mul(_SolSatWorldToPlanet, float4(worldPos, 1.0)).xyz;
+    float up = dot(p, _SolSatMaskUp.xyz);
+    if (up <= 0.0)
+    {
+        return 0;
+    }
+    float2 plane = float2(dot(p, _SolSatMaskEast.xyz), dot(p, _SolSatMaskNorth.xyz)) * (_SolSatMaskUp.w / up);
+    [loop]
+    for (int k = 0; k < 16; k++)
+    {
+        float4 level = _SolSatMaskLevels[k];
+        if (level.w < 0.5)
+        {
+            continue;
+        }
+        float2 a = plane * level.z;
+        float2 d = abs(a - level.xy);
+        if (max(d.x, d.y) < 0.25)
+        {
+            return _SolSatMask.SampleLevel(linearRepeatSampler, float3(frac(a), k), 0);
+        }
+    }
+    return 0;
+}
+
+// Whether the map leaves room for this scatter here; chance thins trees out (0..1, random).
+bool SolSatAllows(float3 worldPos, float chance)
+{
+    float4 m = SolSatMaskAt(worldPos);
+    if (m.a < 0.25)
+    {
+        return true;   // no map data here (yet): as Parallax would place it
+    }
+    if (m.r > 0.3)
+    {
+        return false;  // roads, railways, runways, buildings, water
+    }
+    if (_SolSatKind == 2)
+    {
+        if (m.b > 0.75)
+        {
+            return false;  // airfields
+        }
+        if (m.g > 0.5)
+        {
+            return true;   // forests
+        }
+        // Towns, parks and open land keep a few: gardens, avenues, lone trees.
+        float keep = m.b > 0.25 ? 0.15 : (m.a > 0.75 ? 0.4 : 0.12);
+        return chance < keep;
+    }
+    if (_SolSatKind == 3)
+    {
+        return m.b < 0.25; // no rocks in towns or on airfields
+    }
+    return true;       // grass, flowers, shrubs: everywhere but on what is built or wet
+}
+#endif
+
+//
+//  Distribution Compute Shader
+//
+
+// Runs per triangle in the mesh (indices count / 3)
+
+[numthreads(32,1,1)]
+void Distribute (uint3 id : SV_DispatchThreadID)
+{
+    // Early return if max triangles to be processed is exceeded
+    if (((int)id.x * _PopulationMultiplier) > _MaxCount - 1)
+    {
+        return;
+    }
+    
+    // Get the indices for the vertices of this thread's triangle
+    uint index1 = triangles[id.x * 3];
+    uint index2 = triangles[id.x * 3 + 1];
+    uint index3 = triangles[id.x * 3 + 2];
+    
+    // Get triangle vertices
+    float3 v1 = vertices[index1];
+    float3 v2 = vertices[index2];
+    float3 v3 = vertices[index3];
+    
+    // Get triangle UVs
+    float3 uv1 = uvs[index1];
+    float3 uv2 = uvs[index2];
+    float3 uv3 = uvs[index3];
+    
+    // Get triangle normals
+    float3 n1 = normals[index1];
+    float3 n2 = normals[index2];
+    float3 n3 = normals[index3];
+    
+    float3 averageNormal = TriCenter(n1, n2, n3);
+    
+    // Get face center UV
+    float3 centerUV = (uv1 + uv2 + uv3) * 0.333f;
+    float vertexAllowScatter = centerUV.z;
+    
+    // Get the biome colour
+    float3 biome = biomeMap.SampleLevel(pointClampSampler, centerUV.xy, 0).rgb;
+
+    // Does this biome colour match any of the biomes this scatter can appear in?
+    int biomesEligible = 0;
+    for (int b = 0; b < _NumberOfBiomes; b++)
+    {
+        // + 0.5 to move sample position to the center of the pixel
+        float3 biomeColor = scatterBiomes.SampleLevel(pointClampSampler, float2(0.5f, ((float)b + 0.5f) / (float) _NumberOfBiomes), 0).rgb;
+        biomesEligible += BiomeEligible(biome, biomeColor);
+    }
+    
+    // Skip this triangle if this scatter isn't eligible on it
+    if (biomesEligible == 0)
+    {
+        return;
+    }
+    
+    // Don't place scatters on ineligible gradients, such as mountains
+    float slope = CalculateSlope(averageNormal);
+    if (slope < 0.025)
+    {
+        slope = 0;
+    }
+    
+    // If the mesh is too curved, we can end up with scatters floating/overhanging the terrain (depending on scatter mesh and size)
+    // So skip this triangle entirely
+    float normalDeviance = GetNormalDeviance(n1, n2, n3);
+    if (normalDeviance < 1.0f - _MaxNormalDeviance)
+    {
+        return;
+    }
+    
+    // Get direction from center
+    float3 dfc1 = directionsFromCenter[index1];
+    float3 dfc2 = directionsFromCenter[index2];
+    float3 dfc3 = directionsFromCenter[index3];
+    
+    // Use UV and id as random seed. It's not elegant, but it's persistent. Fyi, using the quad local position triangle center is not valid here
+    // This produces sufficient randomness
+    float3 randomSeed = float3(index1 + _Seed, index2, id.x);
+    
+    // Create an object on this triangle for every population multiplier
+    for (int i = 0; i < _PopulationMultiplier; i++)
+    {
+        // Output struct
+        PositionData newObject;
+        
+        // Get decently random numbers
+        float random1 = Rand(randomSeed + i);
+        float random2 = Rand(randomSeed - i);
+        float random3 = Rand(randomSeed * 0.5 + i);
+        float random4 = Rand(randomSeed * 0.5 - i);
+        float random5 = Rand(randomSeed * 0.25 + i);
+        
+        // X must be sqrtd to achieve a uniform distribution
+        float randomX = sqrt(random1);
+        float randomY = random2;
+        float3 localPos = RandomPoint(v1, v2, v3, randomX, randomY);
+        float3 localCenterDir = RandomPoint(dfc1, dfc2, dfc3, randomX, randomY);
+        float3 localNormal = RandomPoint(dfc1, dfc2, dfc3, randomX, randomY);
+        float localAllowScatter = RandomFloat(uv1.z, uv2.z, uv3.z, randomX, randomY);
+
+        // Blockmap
+    #if defined (LOCAL_BLOCKMAP)
+
+        // Originally thought this should be transformed into world space because I adapted this from the MapDecal PQSMod, which uses direction from center
+        // But I suppose that must also be in local space, so this works out
+        float3 avgDirection = localCenterDir;
+
+        float quadAngle = acos(dot(avgDirection, _BlockMapDirectionFromCenter));
+        float inclusionAngle = atan(_BlockMapRadius / _PlanetRadius) * 1;   // MapDecal PQSMod multiplies this by 4 but it's used per-quad, here is per-triangle
+
+        if (quadAngle < inclusionAngle)
+        {
+            float3 vertexRotation = QuaternionMul(_BlockMapRotation, avgDirection);
+
+            float u = ((vertexRotation.x * _PlanetRadius / _BlockMapRadius + 1.0f) * 0.5f);
+            float v = ((vertexRotation.z * _PlanetRadius / _BlockMapRadius + 1.0f) * 0.5f);
+
+            float blockMapValue = blockMap.SampleLevel(linearClampSampler, float2(u, v), 0).r;
+            if (blockMapValue < 0.5f)
+            {
+                localAllowScatter = 0;
+            }
+        }
+    #endif
+
+
+        float noise = Noise(localCenterDir);
+        
+        // Do we blend between min and max scale based on the noise value, randomly, or a mix of both?
+        
+        // 0 when noise = _NoiseCutoffThreshold (and below), and 1 when noise = 1
+        float noiseScale = LerpStep(_NoiseCutoffThreshold, 1, noise);
+        float scaleInterpolant = lerp(noiseScale, random3, _ScaleRandomness);
+        float3 scale = lerp(_MinScale, _MaxScale, scaleInterpolant);
+        
+        float3 worldPos = mul(_ObjectToWorldMatrix, float4(localPos, 1)).xyz;
+        
+        // Altitude based calculations
+        float altitude = length(worldPos - _PlanetOrigin) - _PlanetRadius;
+        float altitudeScalar = GetAltitudeScalar(altitude, worldPos);
+        
+        // If we're placing all scatters at the same altitude
+        // For anything altitude related we need to be working in world space, so we introduce a slight inefficiency
+        // by requiring a conversion back into local space for the final position
+        if (_DistributeFixedAltitude == 1)
+        {
+            float altitudeDiff = altitude - _FixedAltitude;
+            worldPos -= (_PlanetNormal * altitudeDiff);
+            localPos = mul(_WorldToObjectMatrix, float4(worldPos, 1)).xyz;
+        }
+        
+        // Cannot spawn if:
+        // 1. Failed spawn chance probability check
+        // 2. Is out of altitude range (close to altitude range, lower the spawn chance)
+        // 3. Is on a slope (higher gradient, lower spawn chance)
+        // 4. Noise is past cutoff threshold
+        float vertexAllowScatter = localAllowScatter > 0.5f ? 1 : 0;
+    #if defined (SOLSAT_MASK)
+        if (!SolSatAllows(worldPos, Rand(randomSeed * 0.125 + i)))
+        {
+            vertexAllowScatter = 0;
+        }
+    #endif
+        bool canSpawn = (random4 < _SpawnChance * altitudeScalar * slope * vertexAllowScatter) && (noise > _NoiseCutoffThreshold);
+        
+        newObject.localPos = localPos;
+        newObject.localScale = scale;
+        newObject.rotation = random5 * 180.0f;
+        newObject.index = id.x * 3;
+    
+        if (canSpawn)
+        {
+            transforms.Append(newObject);
+        }
+    }
+}
+
+//
+//  Evaluation Compute Shader
+//
+
+// Transforms local positions to world positions
+
+StructuredBuffer<PositionData> positions;
+AppendStructuredBuffer<TransformData> instancingDataLOD0;
+AppendStructuredBuffer<TransformData> instancingDataLOD1;
+AppendStructuredBuffer<TransformData> instancingDataLOD2;
+StructuredBuffer<uint> objectLimits;
+
+[numthreads(32, 1, 1)]
+void Evaluate(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x > objectLimits[0] - 1)
+    {
+        return;
+    }
+
+    PositionData pos = positions[id.x];
+
+    float3 worldPos = mul(_ObjectToWorldMatrix, float4(pos.localPos, 1)).xyz;
+    
+    // Get distances to frustum faces
+    float4 cd0 = CameraDistances0(worldPos);
+    float4 cd1 = CameraDistances1(worldPos);
+    
+	// Get distance from camera to object
+    float lodDist = distance(_WorldSpaceCameraPosition, worldPos) / _MaxRange; //Percentage to max range
+
+    #if defined (SEPARATE_LOD_RANGE_CULLING)
+    float cullingDistance = distance(_WorldSpaceReferencePosition, worldPos) / _MaxRange;
+    #else
+    float cullingDistance = lodDist;
+    #endif
+    
+    if (cullingDistance > 1)
+    {
+        return;
+    }
+    if (!(all(cd0 >= _CullLimit) && all(cd1 >= _CullLimit)) && cullingDistance > _CullRadius)
+    {
+        return;
+    }
+    
+    bool fadeRangeCull = IsOutOfRangeEarly(cullingDistance, pos.localPos);
+    if (fadeRangeCull)
+    {
+        return;
+    }
+    
+    // Get triangle indices for sampling vertices and colours
+    
+    uint index1 = triangles[pos.index];
+    uint index2 = triangles[pos.index + 1];
+    uint index3 = triangles[pos.index + 2];
+
+    // Calculating the average normal using (nrm1 + nrm2 + nrm3) / 3 does not give face normal, so compute face normal from vertex positions
+
+    float3 vert1 = vertices[index1];
+    float3 vert2 = vertices[index2];    
+    float3 vert3 = vertices[index3];
+
+    // Get the terrain normal in world space
+    float3 avgNormal = normalize(cross(vert2 - vert1, vert3 - vert1));
+    avgNormal = mul(_ObjectToWorldMatrix, float4(avgNormal, 0)).xyz;
+    
+    #if defined (OUTPUT_TERRAIN_COLOR)
+    
+        float3 color1 = colors[index1].rgb;
+        float3 color2 = colors[index2].rgb;
+        float3 color3 = colors[index3].rgb;
+    
+        float3 avgColor = (color1 + color2 + color3) * 0.333f;
+
+    #endif    
+
+    // Get transformation matrix and optionally transform to the terrain normal
+    float4x4 mat = GetTRSMatrix(worldPos, float3(0, pos.rotation, 0), pos.localScale, avgNormal);
+
+    // If we want to output the colour, we need to encode it
+    ENCODE_INSTANCING_DATA(mat)
+    
+    TransformData object;
+    object.objectToWorld = mat;
+
+    if (lodDist > _Lod12Split)
+    {
+        instancingDataLOD2.Append(object);
+        return;
+    }
+    else if (lodDist > _Lod01Split)
+    {
+        instancingDataLOD1.Append(object);
+        return;
+    }
+    else
+    {
+        instancingDataLOD0.Append(object);
+    }
+}
