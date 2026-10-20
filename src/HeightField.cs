@@ -3,6 +3,8 @@
 // To view a copy of this license, visit https://www.gnu.org/licenses/gpl-3.0.html
 
 using System;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -32,12 +34,14 @@ namespace SolSatellite
         static readonly int MapId = Shader.PropertyToID("_SolSatHeightMap");
         static readonly int FrameId = Shader.PropertyToID("_SolSatHeightFrame");
         static readonly int ParamsId = Shader.PropertyToID("_SolSatHeightParams");
+        static readonly LightEvent[] LightEvents = (LightEvent[])Enum.GetValues(typeof(LightEvent));
 
         readonly CelestialBody body;
         readonly Shader shader;
         RenderTexture map;
         Camera cam;
         GameObject holder;
+        readonly HashSet<MonoBehaviour> detached = new HashSet<MonoBehaviour>(); // other mods' scripts on the camera, switched off
         Vector3d centre;         // PQS-local unit direction the capture is centred on
         Vector3d east, north;    // ... and its axes there
         double half;             // half the width captured, metres
@@ -141,9 +145,48 @@ namespace SolSatellite
             finally
             {
                 QualitySettings.shadowDistance = shadows;
+                DetachOthers();
             }
             Perf.Step(ref start, "terrain height capture under the 3D roads");
             captured = true;
+        }
+
+        /// <summary>Other mods hook every camera that draws their objects. EVE's volumetric cloud
+        /// shadows (Atmosphere.ScreenSpaceShadowsManager.OnWillRenderObject) put a renderer on this
+        /// camera whose OnPreCull adds command buffers to the camera and to the sun, and whose
+        /// OnPostRender takes them off only when the camera's stereoActiveEye isn't Left - which it
+        /// is for a camera rendered by hand. Every capture left three more behind, run for each
+        /// camera with shadows every frame (2026-10-20, clean Sol: 166 on this camera and 323 on the
+        /// sun after 10 minutes of flying, the frame 6 -> 45 ms). So whatever another mod puts on
+        /// this camera is switched off once it shows up, and its command buffers come off this camera
+        /// and the lights (each is its own: EVE makes them per camera).</summary>
+        void DetachOthers()
+        {
+            cam.RemoveAllCommandBuffers(); // none are ours
+            foreach (MonoBehaviour b in holder.GetComponents<MonoBehaviour>())
+            {
+                if (b == null || !detached.Add(b))
+                    continue;
+                b.enabled = false;
+                int before = 0, after = 0;
+                Light[] lights = UnityEngine.Object.FindObjectsOfType<Light>();
+                foreach (Light light in lights)
+                    foreach (LightEvent e in LightEvents)
+                        before += light.GetCommandBuffers(e).Length;
+                foreach (FieldInfo f in b.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (!typeof(CommandBuffer).IsAssignableFrom(f.FieldType) || !(f.GetValue(b) is CommandBuffer buffer))
+                        continue;
+                    foreach (Light light in lights)
+                        foreach (LightEvent e in LightEvents)
+                            light.RemoveCommandBuffer(e, buffer);
+                }
+                foreach (Light light in lights)
+                    foreach (LightEvent e in LightEvents)
+                        after += light.GetCommandBuffers(e).Length;
+                Debug.Log($"[SolSatellite] Height camera: switched off {b.GetType().FullName} ({b.GetType().Assembly.GetName().Name}) " +
+                          $"that another mod put on it; command buffers on the lights {before} -> {after}");
+            }
         }
 
         /// <summary>The camera above the centre, looking down, north up on the image - in this

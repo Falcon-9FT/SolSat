@@ -26,6 +26,7 @@ namespace SolSatellite
             public long Bytes, KeptBytes;   // total; of which never deleted
             public int Files;
             public bool Scanned;
+            public DateTime ScannedAt;      // local time of the last count
             public string Result;
 
             public Area(string name, string dir, Func<string, bool> keep)
@@ -42,7 +43,7 @@ namespace SolSatellite
 
         public readonly Area Imagery, Osm, Terrain;
         volatile bool busy;
-        float nextRun;
+        float nextRun, lastStart = -1e9f;
 
         public bool Busy => busy;
 
@@ -72,6 +73,14 @@ namespace SolSatellite
         /// <summary>Check both areas at the next Update.</summary>
         public void CheckSoon() => nextRun = 0f;
 
+        /// <summary>The cache tab was opened: count again unless the last count is fresh. Between
+        /// checks the sizes stand still, and on a new install they read 0 while the cache grows.</summary>
+        public void Refresh()
+        {
+            if (!busy && Time.realtimeSinceStartup - lastStart > 60f)
+                nextRun = 0f;
+        }
+
         /// <summary>Deletes everything in an area that may be deleted.</summary>
         public void Clear(Area area)
         {
@@ -82,7 +91,8 @@ namespace SolSatellite
         void Start(Area only, bool clear)
         {
             busy = true;
-            nextRun = Time.realtimeSinceStartup + Interval;
+            lastStart = Time.realtimeSinceStartup;
+            nextRun = lastStart + Interval;
             Area[] areas = only != null ? new[] { only } : new[] { Imagery, Osm, Terrain };
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -155,6 +165,7 @@ namespace SolSatellite
             a.Bytes = total;
             a.KeptBytes = kept;
             a.Files = files.Count - deleted;
+            a.ScannedAt = DateTime.Now;
             a.Scanned = true;
             if (deleted > 0)
             {

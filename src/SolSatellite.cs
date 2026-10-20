@@ -106,10 +106,29 @@ namespace SolSatellite
             sceneLoaded && Time.realtimeSinceStartup >= sceneSettledAt &&
             (HighLogic.LoadedScene != GameScenes.FLIGHT || FlightGlobals.ready);
 
+        /// <summary>Set when another mod draws Earth's ground (the window says so at the top).</summary>
+        internal string Conflict { get; private set; }
+        bool mirageEarth; // Mirage draws Earth: its imagery and relief stay, ours aren't loaded
+
+        /// <summary>Mirage puts its own imagery and relief (GPU-tessellated) on Earth: ours would lie
+        /// under it. Its PQSMods are on Earth's PQS from the game's loading on.</summary>
+        static string MirageOnEarth()
+        {
+            CelestialBody body = FlightGlobals.GetBodyByName(BodyName);
+            if (body == null || body.pqsController == null)
+                return null;
+            foreach (PQSMod mod in body.pqsController.GetComponentsInChildren<PQSMod>(true))
+                if (mod.GetType().Name.StartsWith("PQSMod_Mirage", StringComparison.Ordinal))
+                    return mod.GetType().Name;
+            return null;
+        }
+
         internal string StreamStatus
         {
             get
             {
+                if (mirageEarth)
+                    return "не грузятся: снимки и рельеф Земли рисует Mirage";
                 if (settings == null || !settings.StreamEnabled)
                     return "выключены";
                 if (tileShader == null)
@@ -142,6 +161,15 @@ namespace SolSatellite
                 // "solsat disable" renames the patch; then the terrain shader isn't ours either.
                 if (!File.Exists(Path.Combine(ModDir, "SolSatellite.cfg")))
                     settings.StreamEnabled = false;
+                string mirageMod = MirageOnEarth();
+                if (mirageMod != null)
+                {
+                    mirageEarth = true;
+                    Conflict = "Найден мод Mirage: снимки и рельеф Земли рисует он, SolSat свои не грузит. От SolSat " +
+                               "остаются здания, фонари и объёмные дороги. Чтобы вернуть снимки и рельеф SolSat, удалите Mirage.";
+                    Debug.LogWarning($"[SolSatellite] Mirage draws Earth ({mirageMod} on its PQS): its imagery and relief stay; " +
+                                     "this mod loads neither and adds buildings, lamps and 3D roads only");
+                }
                 AssetBundle bundle = AssetBundle.LoadFromFile(Path.Combine(ModDir, "Shaders", "SolSatellite-windows.unity3d"));
                 if (bundle != null)
                     foreach (ComputeShader cs in bundle.LoadAllAssets<ComputeShader>())
@@ -187,9 +215,13 @@ namespace SolSatellite
                 try
                 {
                     // Before the space centre starts Earth's PQS: the mod has to be there by then.
-                    terrain = new DemTerrain(settings, Path.Combine(ModDir, "PluginData", "Cache", "dem"));
-                    terrain.Changed += caps => buildings?.TerrainChanged(caps); // what stands on the ground follows it
-                    terrain.Attach();
+                    // Not under Mirage: buildings then stand on its relief (the PQS heights).
+                    if (!mirageEarth)
+                    {
+                        terrain = new DemTerrain(settings, Path.Combine(ModDir, "PluginData", "Cache", "dem"));
+                        terrain.Changed += caps => buildings?.TerrainChanged(caps); // what stands on the ground follows it
+                        terrain.Attach();
+                    }
                 }
                 catch (Exception e)
                 {
@@ -341,7 +373,7 @@ namespace SolSatellite
                 Perf.End(Perf.Part.RoadHeights);
                 Perf.End(Perf.Part.City);
             }
-            if (!settings.StreamEnabled || tileShader == null)
+            if (!settings.StreamEnabled || tileShader == null || mirageEarth)
             {
                 buildings?.DrawLights(null); // no light map: lets go of what waited to be erased from it
                 return;

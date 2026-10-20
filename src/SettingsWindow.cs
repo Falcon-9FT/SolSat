@@ -32,7 +32,7 @@ namespace SolSatellite
         readonly StringBuilder sb = new StringBuilder();
         ApplicationLauncherButton button;
         Texture2D icon;
-        GUIStyle header, text, muted, smallButton;
+        GUIStyle header, text, muted, warning, smallButton;
         bool visible, details, compact;
         int tab;
         Vector2 scroll;
@@ -43,6 +43,7 @@ namespace SolSatellite
         readonly Dictionary<string, string> typed = new Dictionary<string, string>(); // number fields being edited
         bool inputLocked;
         DiskCache.Area confirmClear; // asked "sure?" about clearing this one
+        bool cacheCounted;           // the cache tab has asked for a fresh count since it was opened
 
         public SettingsWindow(LiveColorCube owner)
         {
@@ -74,6 +75,7 @@ namespace SolSatellite
             if (!visible)
             {
                 LockInput(false);
+                cacheCounted = false;
                 return;
             }
             GUI.skin = HighLogic.Skin;
@@ -83,6 +85,8 @@ namespace SolSatellite
                 text = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true };
                 muted = new GUIStyle(text);
                 muted.normal.textColor = new Color(0.72f, 0.74f, 0.76f);
+                warning = new GUIStyle(text) { fontStyle = FontStyle.Bold };
+                warning.normal.textColor = new Color(1f, 0.62f, 0.25f);
                 smallButton = new GUIStyle(GUI.skin.button) { fontSize = 11, padding = new RectOffset(6, 6, 2, 2) };
             }
             // While a mod profile is recorded the window shrinks to its status (DrawWindow).
@@ -137,11 +141,19 @@ namespace SolSatellite
                 GUI.DragWindow();
                 return;
             }
+            if (owner.Conflict != null)
+                GUILayout.Label(owner.Conflict, warning);
             int selected = GUILayout.Toolbar(tab, Tabs);
             if (selected != tab)
             {
                 tab = selected;
                 scroll = Vector2.zero;
+                cacheCounted = false;
+            }
+            if (tab == 3 && !cacheCounted)
+            {
+                owner.Cache?.Refresh(); // the sizes as of now, not of the last check
+                cacheCounted = true;
             }
             GUILayout.Space(4f);
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(ContentHeight));
@@ -518,6 +530,19 @@ namespace SolSatellite
                     GUILayout.Label(ModProfiler.Summary, text);
                     GUILayout.Label("Полный отчёт: " + ModProfiler.ReportPath, muted);
                 }
+
+                GUILayout.Space(6f);
+                GUILayout.Label("Перепись сцены", header);
+                if (GUILayout.Button("Переписать", GUILayout.Width(160f)))
+                    SceneCensus.Take();
+                GUILayout.Label("Считает объекты, рендереры, коллайдеры, скрипты по типам и буферы камер и пишет, что " +
+                                "прибавилось с прошлого нажатия. Если кадр со временем тяжелеет: нажмите в начале полёта, " +
+                                "полетайте, пока не потяжелеет, нажмите ещё раз. Игра на долю секунды замрёт.", muted);
+                if (SceneCensus.Summary != null)
+                {
+                    GUILayout.Label(SceneCensus.Summary, text);
+                    GUILayout.Label("Полный отчёт: " + SceneCensus.ReportPath, muted);
+                }
                 return;
             }
             GUILayout.Label(ModProfiler.Status, text);
@@ -607,7 +632,7 @@ namespace SolSatellite
             }
             GUILayout.Label(cache.Busy ? "Идёт проверка..." : "", text);
             GUILayout.EndHorizontal();
-            GUILayout.Label("Лимит 0 — без ограничения. Проверка раз в 10 минут; когда кэш больше лимита, " +
+            GUILayout.Label("Лимит 0 — без ограничения. Проверка раз в 10 минут и при открытии этой вкладки; когда кэш больше лимита, " +
                             "удаляется то, что дольше всего не открывалось, пока не останется 90%.", muted);
         }
 
@@ -615,7 +640,7 @@ namespace SolSatellite
         {
             GUILayout.Label(title, header);
             string used = area.Scanned
-                ? $"Занято {Gb(area.Bytes)}" + (area.KeptBytes > 0 ? $", из них {Gb(area.KeptBytes)} не удаляются" : "")
+                ? $"Занято {Gb(area.Bytes)} (на {area.ScannedAt:HH:mm})" + (area.KeptBytes > 0 ? $", из них {Gb(area.KeptBytes)} не удаляются" : "")
                 : "Считается...";
             GUILayout.Label(used, text);
             limit = NumberRow(key, "Лимит:", limit, 0f, float.MaxValue, "ГБ");
