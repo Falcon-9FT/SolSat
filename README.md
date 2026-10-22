@@ -1,176 +1,180 @@
 # SolSat
 
-**Мод для модификации планеты Sol.** Он превращает Землю из планетного пака Sol для Kerbal Space
-Program 1.12.5 в карту в духе Microsoft Flight Simulator: спутниковые снимки под ногами, здания и
-дороги из OpenStreetMap, ночные фонари, настоящий рельеф.
+**A mod that reworks the Sol planet pack.** It turns Earth from the Sol planet pack for Kerbal Space
+Program 1.12.5 into a Microsoft Flight Simulator-style map: satellite imagery under your feet,
+buildings and roads from OpenStreetMap, street lights at night, real terrain.
 
-Лицензия: [GPL-3.0](LICENSE)
+License: [GPL-3.0](LICENSE) · [Русская версия](README.ru.md)
 
 ---
 
-## ⚠️ Предупреждение
+## ⚠️ Warning
 
-По умолчанию мод берёт снимки **прямо с серверов Google**, тайл за тайлом. Условия использования
-Google такое не разрешают. При большом числе запросов Google может показывать капчу, ограничить
-или заблокировать ваш IP-адрес, в том числе в других своих сервисах.
+By default the mod fetches imagery **directly from Google's servers**, tile by tile. Google's terms
+of service do not allow this. With a large number of requests Google may show a captcha, throttle
+or block your IP address, including in its other services.
 
-**Автор мода не несёт никакой ответственности** за блокировки, попадание вашего IP-адреса в
-спам-листы и любые другие последствия загрузки спутниковых снимков. Вы используете мод на свой
-страх и риск.
+**The mod's author accepts no liability whatsoever** for blocks, your IP address ending up on
+spam lists, or any other consequences of downloading satellite imagery. You use the mod at your
+own risk.
 
-- Не поднимайте скорость загрузки выше стандартной: 6 запросов в секунду, 4 соединения. Если
-  сервер начинает отказывать, мод сам делает паузы (от минуты до 15 минут), а при повторных
-  отказах выключает загрузку до конца игровой сессии.
-- Только для себя. Не распространяйте кэш снимков и собранные из них текстуры.
-- Не хотите рисковать — переключите источник на `eox` (Sentinel-2 cloudless, ~10 м на пиксель,
-  менее детально): в `SolSatellite/PluginData/Tools/settings.ini` раздел `[general]`,
+- Do not raise the download rate above the default: 6 requests per second, 4 connections. If the
+  server starts refusing, the mod pauses on its own (from one minute to 15 minutes), and after
+  repeated refusals it turns downloading off for the rest of the game session.
+- For personal use only. Do not distribute the imagery cache or textures built from it.
+- If you don't want the risk, switch the source to `eox` (Sentinel-2 cloudless, ~10 m per pixel,
+  less detailed): in `SolSatellite/PluginData/Tools/settings.ini`, section `[general]`,
   `source = eox`.
 
 ---
 
-## Как это работает
+## How it works
 
-**Снимки у земли.** Плагин подгружает тайлы спутниковых снимков вокруг камеры и складывает их в
-16 вложенных слоёв: у камеры самые детальные, дальше всё грубее. Рисует их изменённый шейдер
-рельефа Parallax, и только на Земле. Скачанные тайлы остаются в кэше на диске, повторный визит
-грузится с диска.
+**Imagery on the ground.** The plugin loads satellite imagery tiles around the camera and stacks
+them into 16 nested layers: the most detailed at the camera, coarser further out. They are drawn by
+a modified Parallax terrain shader, and only on Earth. Downloaded tiles stay in a disk cache, so a
+repeat visit loads from disk.
 
-**Земля с орбиты (по желанию).** Утилита `PluginData/Tools/solsat` собирает из снимков кубическую
-текстуру всей Земли и подключает её патчем. Без этого шага Земля с орбиты выглядит так же, как в
-Sol.
+**Earth from orbit (optional).** The `PluginData/Tools/solsat` utility builds a cube texture of the
+whole Earth from the imagery and hooks it in with a patch. Without this step Earth looks the same
+from orbit as it does in Sol.
 
-**Здания.** Контуры и высоты берутся из OpenStreetMap (векторные тайлы OpenFreeMap, подробности
-через Overpass API) и из Overture Maps. Крыши достраиваются по типу здания, фасады и кровля
-текстурированы материалами ambientCG.
+**Buildings.** Footprints and heights come from OpenStreetMap (OpenFreeMap vector tiles, details
+via the Overpass API) and from Overture Maps. Roofs are built according to the building type;
+facades and roofing are textured with ambientCG materials.
 
-**Дороги и железные дороги** рисуются поверх снимков, а рядом с камерой становятся объёмными.
+**Roads and railways** are drawn over the imagery and become 3D near the camera.
 
-**Ночью** горят уличные фонари по карте. Огни городов из EnvironmentalVisualEnhancements видны и с
-орбиты.
+**At night** street lamps light up as on the map. City lights from EnvironmentalVisualEnhancements
+are visible from orbit too.
 
-**Рельеф.** Вблизи камеры и аппарата высоты Sol заменяются настоящими из тайлов Mapterhorn: где
-опубликованы лидарные модели (США, большая часть Европы, Япония и др.), они подробные, в остальном
-мире разрешение 30 м. Дальше от камеры остаётся рельеф Sol.
+**Terrain.** Near the camera and the vessel, Sol's heights are replaced with real ones from
+Mapterhorn tiles: where lidar models are published (USA, most of Europe, Japan and others) they are
+detailed, elsewhere in the world the resolution is 30 m. Further from the camera Sol's terrain
+remains.
 
-**Трава, деревья и камни Parallax расставляются по карте**: их нет на дорогах, полосах, в зданиях и
-в воде, деревья растут в лесах.
+**Parallax grass, trees and rocks are placed according to the map**: none on roads, runways, in
+buildings or in water, and trees grow in forests.
 
-**Окно мода** открывается кнопкой на панели KSP (полёт, карта, космоцентр, станция слежения). В
-нём радиусы загрузки, источник снимков, кэш и вкладка «Нагрузка» с профайлером: сколько времени
-кадра занимает каждый мод.
+**The mod window** opens with a button on the KSP toolbar (flight, map, space center, tracking
+station). It holds the loading radii, the imagery source, the cache and the "Нагрузка" (Load) tab
+with a profiler: how much of the frame each mod takes.
 
-Загрузка, разбор карт и сборка мешей идут в фоновых потоках. Кэш на диске ограничен по размеру,
-самое старое удаляется само.
+Downloading, map parsing and mesh building run on background threads. The disk cache is limited in
+size; the oldest data is deleted automatically.
 
 ---
 
-## Требования
+## Requirements
 
 - Kerbal Space Program 1.12.5.
-- Sol (проверялось в масштабе Quarter) со своими зависимостями: Kopernicus, Parallax Continued,
+- Sol (tested at Quarter scale) with its dependencies: Kopernicus, Parallax Continued,
   AdvancedPQSTools, KSCSwitcher, ModuleManager.
-- Шейдеры рельефа мода собраны из Parallax Continued сборки `c449da1` и заменяют его шейдеры. С
-  другой версией Parallax рельеф может отображаться неправильно, тогда шейдеры нужно пересобрать
-  (см. «Сборка из исходников»).
+- The mod's terrain shaders are built from Parallax Continued build `c449da1` and replace its
+  shaders. With another Parallax version the terrain may render incorrectly; the shaders then need
+  to be rebuilt (see "Building from source").
 - Harmony (`000_Harmony`), KSPTextureLoader.
-- Интернет.
+- An internet connection.
 
-По желанию:
+Optional:
 
-- EnvironmentalVisualEnhancements — огни городов;
-- BurstPQS + KSPBurst — рельеф строится быстрее;
-- Python 3 — утилита для текстуры Земли с орбиты.
+- EnvironmentalVisualEnhancements — city lights;
+- BurstPQS + KSPBurst — faster terrain building;
+- Python 3 — the utility for the Earth-from-orbit texture.
 
-## Установка
+⚠️ **Using it together with the Mirage mod for Sol is strongly discouraged.**
 
-1. Скопируйте папку `SolSatellite` в `GameData` игры.
-2. Запустите игру. Снимки, здания и рельеф загружаются вокруг вас по мере полёта. Первый визит в
-   новое место занимает время и трафик, дальше всё берётся из кэша.
-3. Настройки меняются в окне мода или в файле `SolSatellite/PluginData/Tools/settings.ini`.
+## Installation
 
-Удаление — удалить папку `GameData/SolSatellite`, кэш лежит внутри неё.
+1. Copy the `SolSatellite` folder into the game's `GameData`.
+2. Start the game. Imagery, buildings and terrain load around you as you fly. The first visit to a
+   new place takes time and traffic; after that everything comes from the cache.
+3. Settings are changed in the mod window or in `SolSatellite/PluginData/Tools/settings.ini`.
 
-## Настройки по умолчанию
+To uninstall, delete the `GameData/SolSatellite` folder; the cache is inside it.
 
-| Параметр | Значение |
+## Default settings
+
+| Setting | Value |
 |---|---|
-| Источник снимков | `google` |
-| Максимальный зум снимков | 18 |
-| Скорость загрузки снимков | 6 запросов/с, 4 соединения |
-| Тайлов снимков в памяти | 1024 |
-| Радиус зданий | 4 км |
-| Радиус фонарей | 8 км |
-| Радиус дорог / 3D-дорог | 10 км / 2,5 км |
-| Рельеф | включён, Mapterhorn, 10 запросов/с |
-| Кэш: снимки / карты / рельеф | 20 / 5 / 5 ГБ |
+| Imagery source | `google` |
+| Maximum imagery zoom | 18 |
+| Imagery download rate | 6 requests/s, 4 connections |
+| Imagery tiles in memory | 1024 |
+| Building radius | 4 km |
+| Street lamp radius | 8 km |
+| Road / 3D road radius | 10 km / 2.5 km |
+| Terrain | on, Mapterhorn, 10 requests/s |
+| Cache: imagery / maps / terrain | 20 / 5 / 5 GB |
 
-## Земля с орбиты (по желанию)
+## Earth from orbit (optional)
 
-Команды запускаются в папке `SolSatellite/PluginData/Tools`:
+Run the commands in the `SolSatellite/PluginData/Tools` folder:
 
-1. `setup.bat` — создаёт Python-окружение.
-2. `solsat.bat plan` — сколько тайлов нужно и сколько времени займёт загрузка.
-3. `solsat.bat all` — скачать всё и собрать текстуру. Или `live.bat`: качает в фоне и обновляет
-   текстуру прямо в игре.
+1. `setup.bat` — creates the Python environment.
+2. `solsat.bat plan` — how many tiles are needed and how long the download will take.
+3. `solsat.bat all` — download everything and build the texture. Or `live.bat`: downloads in the
+   background and updates the texture right in the game.
 
-Это тысячи запросов подряд, и риск блокировки IP здесь выше всего (см. предупреждение).
-`solsat.bat disable` / `solsat.bat enable` выключают и включают мод без удаления файлов.
+These are thousands of requests in a row, and the risk of an IP block is highest here (see the
+warning). `solsat.bat disable` / `solsat.bat enable` turn the mod off and on without deleting files.
 
-## Сборка из исходников
+## Building from source
 
-- **Плагин:** нужен .NET SDK и KSP с Sol и модами из «Требований»: плагин собирается против их DLL.
-  Укажите папку игры и запустите сборку:
+- **Plugin:** you need the .NET SDK and KSP with Sol and the mods from "Requirements": the plugin is
+  built against their DLLs. Point to the game folder and run the build:
 
   ```bat
   set "KSP_DIR=D:\Games\Kerbal Space Program"
   src\build.bat
   ```
 
-  DLL ложатся в `SolSatellite/Plugins`. Можно передать свой путь вывода:
-  `src\build.bat "%KSP_DIR%\GameData\SolSatellite\Plugins\SolSatellite.dll"` (KSP при этом должна
-  быть закрыта).
-- **Шейдеры:** нужна Unity 2019.4.18f1 (та же версия, что у KSP). `src\build_shaders.bat own`
-  собирает только свои шейдеры, без параметра — ещё и шейдеры рельефа Parallax. Бандлы ложатся в
-  `SolSatellite/Shaders`.
+  The DLLs go to `SolSatellite/Plugins`. You can pass your own output path:
+  `src\build.bat "%KSP_DIR%\GameData\SolSatellite\Plugins\SolSatellite.dll"` (KSP must be closed
+  while doing this).
+- **Shaders:** you need Unity 2019.4.18f1 (the same version as KSP). `src\build_shaders.bat own`
+  builds only the mod's own shaders; without the argument it also builds the Parallax terrain
+  shaders. The bundles go to `SolSatellite/Shaders`.
 
 ---
 
-## Использованные сервисы и данные
+## Services and data used
 
-| Сервис | Для чего | Права |
+| Service | Used for | Rights |
 |---|---|---|
-| Google Maps, спутниковый слой | снимки (по умолчанию) | © Google и поставщики снимков. Условия Google не разрешают такое использование вне их приложений: только на свой риск |
-| EOX Sentinel-2 cloudless 2020 | снимки (`source = eox`) | Sentinel-2 cloudless — https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2020); некоммерческое использование с указанием авторства |
-| OpenStreetMap | здания, дороги, железные дороги, фонари | © участники OpenStreetMap, ODbL 1.0 — https://www.openstreetmap.org/copyright |
-| OpenFreeMap | векторные тайлы OpenStreetMap | https://openfreemap.org, схема © OpenMapTiles |
-| Overpass API | подробности OpenStreetMap | https://overpass-api.de |
-| Overture Maps Foundation | контуры зданий | © Overture Maps Foundation, ODbL (тема buildings) |
-| Mapterhorn | настоящий рельеф | https://mapterhorn.com — открытые модели рельефа: Copernicus DEM GLO-30 (© DLR e.V. 2010–2014 и © Airbus Defence and Space GmbH 2014–2018, предоставлено в рамках программы Copernicus) и национальные лидарные модели; полный список источников — на сайте Mapterhorn |
-| ambientCG | текстуры материалов зданий и дорог | CC0 1.0 |
+| Google Maps, satellite layer | imagery (default) | © Google and imagery providers. Google's terms do not allow this use outside their apps: at your own risk only |
+| EOX Sentinel-2 cloudless 2020 | imagery (`source = eox`) | Sentinel-2 cloudless — https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2020); non-commercial use with attribution |
+| OpenStreetMap | buildings, roads, railways, street lamps | © OpenStreetMap contributors, ODbL 1.0 — https://www.openstreetmap.org/copyright |
+| OpenFreeMap | OpenStreetMap vector tiles | https://openfreemap.org, schema © OpenMapTiles |
+| Overpass API | OpenStreetMap details | https://overpass-api.de |
+| Overture Maps Foundation | building footprints | © Overture Maps Foundation, ODbL (buildings theme) |
+| Mapterhorn | real terrain | https://mapterhorn.com — open elevation models: Copernicus DEM GLO-30 (© DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018, provided under the Copernicus programme) and national lidar models; the full list of sources is on the Mapterhorn website |
+| ambientCG | building and road material textures | CC0 1.0 |
 
-## Сторонний код и модели в составе мода
+## Third-party code and assets included
 
-| Что | Где | Лицензия |
+| What | Where | License |
 |---|---|---|
-| Parallax Continued (Gameslinx) — шейдеры рельефа и растительности, изменённые | `src/Shaders`, `src/ShaderProject`, `SolSatellite/Shaders/ParallaxTerrain-windows.unity3d`, `TerrainScatters` в `SolSatellite/Shaders/SolSatellite-windows.unity3d` | All Rights Reserved |
-| EnvironmentalVisualEnhancements (форк LGhassen) — include-файлы шейдера огней городов | `src/Shaders/SolSatellite/EVE` | MIT |
-| mapbox/earcut 2.2.4 — триангуляция многоугольников, порт на C# | `src/Earcut.cs` | ISC |
+| Parallax Continued (Gameslinx) — terrain and scatter shaders, modified | `src/Shaders`, `src/ShaderProject`, `SolSatellite/Shaders/ParallaxTerrain-windows.unity3d`, `TerrainScatters` in `SolSatellite/Shaders/SolSatellite-windows.unity3d` | All Rights Reserved |
+| EnvironmentalVisualEnhancements (LGhassen's fork) — include files of the city lights shader | `src/Shaders/SolSatellite/EVE` | MIT |
+| mapbox/earcut 2.2.4 — polygon triangulation, C# port | `src/Earcut.cs` | ISC |
 | DirectXTex `texconv.exe` (Microsoft) | `SolSatellite/PluginData/Tools/bin` | MIT |
 
 ---
 
-## Лицензия
+## License
 
 Copyright (c) 2026 Falcon 9.
 
-SolSat — свободная программа. Её можно распространять и изменять на условиях
-[GNU General Public License версии 3](LICENSE) (GPL-3.0), опубликованной Free Software
-Foundation. Изменённые версии тоже должны выходить под GPL-3.0, с исходным кодом и с указанием
-оригинала.
+SolSat is free software. You can redistribute and modify it under the terms of the
+[GNU General Public License version 3](LICENSE) (GPL-3.0) as published by the Free Software
+Foundation. Modified versions must also be released under GPL-3.0, with source code and with
+credit to the original.
 
-Лицензия распространяется на собственный код и файлы SolSat. Сторонние части из таблицы выше
-остаются под своими лицензиями. Данные и снимки сервисов (Google, OpenStreetMap, Overture Maps,
-Mapterhorn, EOX) не входят в мод: каждый пользователь загружает их сам, на условиях этих сервисов.
+The license covers SolSat's own code and files. The third-party parts in the table above remain
+under their own licenses. Data and imagery from the services (Google, OpenStreetMap, Overture Maps,
+Mapterhorn, EOX) are not part of the mod: each user downloads them themselves, under those
+services' terms.
 
-Программа распространяется в надежде, что она будет полезной, но **без каких-либо гарантий**,
-даже без подразумеваемой гарантии пригодности для продажи или для конкретной цели.
+This program is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
